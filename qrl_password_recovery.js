@@ -93,11 +93,13 @@ if (isMainThread) {
             
             if (bytesRead === 0) {
                 eof = true;
-                return buffer.length > 0 ? [buffer] : [];
+                console.log('✓ Reached end of file');
+                return buffer.length > 0 ? [buffer.trim()].filter(p => p.length > 0) : [];
             }
             
             filePosition += bytesRead;
-            buffer += chunk.subarray(0, bytesRead).toString('utf8');
+            const chunkText = chunk.subarray(0, bytesRead).toString('utf8');
+            buffer += chunkText;
             
             const lines = buffer.split('\n');
             buffer = lines.pop() || ''; // Keep incomplete line in buffer
@@ -118,20 +120,29 @@ if (isMainThread) {
     async function sendPasswordsToWorker() {
         if (waitingWorkers.length === 0) return;
         
-        const passwords = await readNextChunk();
-        
-        if (passwords.length > 0) {
-            const worker = waitingWorkers.shift();
-            worker.postMessage({ type: 'passwords', passwords });
-        } else if (eof) {
-            // Send done signal to all waiting workers
-            while (waitingWorkers.length > 0) {
+        try {
+            const passwords = await readNextChunk();
+            
+            if (passwords.length > 0) {
                 const worker = waitingWorkers.shift();
-                worker.postMessage({ type: 'done' });
+                if (worker && !worker.killed) {
+                    worker.postMessage({ type: 'passwords', passwords });
+                }
+            } else if (eof) {
+                // Send done signal to all waiting workers
+                console.log(`✓ Signaling completion to ${waitingWorkers.length} waiting workers`);
+                while (waitingWorkers.length > 0) {
+                    const worker = waitingWorkers.shift();
+                    if (worker && !worker.killed) {
+                        worker.postMessage({ type: 'done' });
+                    }
+                }
+            } else {
+                // No passwords available but not EOF yet, try again shortly
+                setTimeout(() => sendPasswordsToWorker(), 100);
             }
-        } else {
-            // No passwords available but not EOF yet, try again shortly
-            setTimeout(() => sendPasswordsToWorker(), 100);
+        } catch (error) {
+            console.error('Error in sendPasswordsToWorker:', error.message);
         }
     }
     
@@ -155,7 +166,14 @@ if (isMainThread) {
             const progressPercent = totalFileSize > 0 ? ((filePosition / totalFileSize) * 100).toFixed(2) : 0;
             const progressGB = (filePosition / 1024 / 1024 / 1024).toFixed(2);
             const totalGB = (totalFileSize / 1024 / 1024 / 1024).toFixed(2);
-            console.log(`Progress: ${progressPercent}% (${progressGB}/${totalGB} GB) | ${totalTested.toLocaleString()} passwords at ${rate.toLocaleString()}/sec`);
+            
+            // Format elapsed time
+            const hours = Math.floor(elapsed / 3600);
+            const minutes = Math.floor((elapsed % 3600) / 60);
+            const seconds = Math.floor(elapsed % 60);
+            const timeStr = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            
+            console.log(`Progress: ${progressPercent}% (${progressGB}/${totalGB} GB) | ${totalTested.toLocaleString()} passwords at ${rate.toLocaleString()}/sec | Runtime: ${timeStr}`);
         } else {
             clearInterval(progressInterval);
         }
@@ -192,12 +210,20 @@ if (isMainThread) {
                 console.log(`Worker ${i} exited with code ${code}`);
                 // Check if all workers are done
                 const aliveWorkers = workers.filter(w => !w.killed);
-                if (aliveWorkers.length === 0 && eof) {
-                    console.log('\n✗ Password not found in wordlist');
+                if (aliveWorkers.length === 0) {
+                    if (eof) {
+                        console.log('\n✗ Password not found in wordlist');
+                    } else {
+                        console.log('\n✗ All workers died unexpectedly');
+                    }
                     cleanup();
                     process.exit(1);
                 }
             }
+        });
+        
+        worker.on('error', (error) => {
+            console.error(`Worker ${i} error:`, error.message);
         });
         
         workers.push(worker);
