@@ -70,11 +70,14 @@ if (isMainThread) {
     let waitingWorkers = [];
     let buffer = '';
     let eof = false;
+    let totalFileSize = 0;
     
     async function initializeFile() {
         try {
             fileHandle = await fs.promises.open(wordlistFile, 'r');
-            console.log('✓ File opened for streaming');
+            const stats = await fileHandle.stat();
+            totalFileSize = stats.size;
+            console.log(`✓ File opened for streaming (${(totalFileSize / 1024 / 1024 / 1024).toFixed(2)} GB)`);
         } catch (error) {
             console.error('✗ Error opening wordlist:', error.message);
             process.exit(1);
@@ -126,6 +129,9 @@ if (isMainThread) {
                 const worker = waitingWorkers.shift();
                 worker.postMessage({ type: 'done' });
             }
+        } else {
+            // No passwords available but not EOF yet, try again shortly
+            setTimeout(() => sendPasswordsToWorker(), 100);
         }
     }
     
@@ -146,7 +152,10 @@ if (isMainThread) {
         if (!found) {
             const elapsed = (Date.now() - startTime) / 1000;
             const rate = Math.round(totalTested / elapsed);
-            console.log(`Progress: ${totalTested.toLocaleString()} passwords tested at ${rate.toLocaleString()}/sec`);
+            const progressPercent = totalFileSize > 0 ? ((filePosition / totalFileSize) * 100).toFixed(2) : 0;
+            const progressGB = (filePosition / 1024 / 1024 / 1024).toFixed(2);
+            const totalGB = (totalFileSize / 1024 / 1024 / 1024).toFixed(2);
+            console.log(`Progress: ${progressPercent}% (${progressGB}/${totalGB} GB) | ${totalTested.toLocaleString()} passwords at ${rate.toLocaleString()}/sec`);
         } else {
             clearInterval(progressInterval);
         }
